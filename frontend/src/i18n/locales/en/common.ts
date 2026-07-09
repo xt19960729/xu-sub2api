@@ -169,6 +169,7 @@ export default {
     redeemCodes: 'Redeem Codes',
     ops: 'Ops',
     promoCodes: 'Promo Codes',
+    dailyCashback: 'Daily Cashback',
     settings: 'Settings',
     myAccount: 'My Account',
     lightMode: 'Light Mode',

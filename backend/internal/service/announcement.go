@@ -23,6 +23,7 @@ const (
 const (
 	AnnouncementConditionTypeSubscription = domain.AnnouncementConditionTypeSubscription
 	AnnouncementConditionTypeBalance      = domain.AnnouncementConditionTypeBalance
+	AnnouncementConditionTypeUser         = domain.AnnouncementConditionTypeUser
 )
 
 const (
@@ -75,6 +76,7 @@ type AnnouncementRepository interface {
 
 	List(ctx context.Context, params pagination.PaginationParams, filters AnnouncementListFilters) ([]Announcement, *pagination.PaginationResult, error)
 	ListActive(ctx context.Context, now time.Time) ([]Announcement, error)
+	ListActiveForUser(ctx context.Context, now time.Time, userID int64) ([]Announcement, error)
 }
 
 type AnnouncementReadRepository interface {

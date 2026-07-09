@@ -652,6 +652,7 @@ var ProviderSet = wire.NewSet(
 	NewModelPricingResolver,
 	NewContentModerationService,
 	NewAffiliateService,
+	ProvideDailyCashbackService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
 	ProvidePaymentOrderExpiryService,
@@ -699,6 +700,13 @@ func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache Lead
 
 // ProvideChannelMonitorService 创建渠道监控服务（CRUD + RunCheck + 用户视图聚合）。
 // 加密器复用 wire 中已注入的 SecretEncryptor（AES-256-GCM）。
+func ProvideDailyCashbackService(repo DailyCashbackRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, billingCacheService *BillingCacheService, lockCache LeaderLockCache, db *sql.DB) *DailyCashbackService {
+	svc := NewDailyCashbackService(repo, authCacheInvalidator, billingCacheService)
+	svc.SetLeaderLock(lockCache, db)
+	svc.Start()
+	return svc
+}
+
 func ProvideChannelMonitorService(
 	repo ChannelMonitorRepository,
 	encryptor SecretEncryptor,

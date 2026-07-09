@@ -106,6 +106,7 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+		registerDailyCashbackRoutes(admin, h)
 	}
 }
 
@@ -686,5 +687,20 @@ func registerAffiliateRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			users.PUT("/:user_id", h.Admin.Affiliate.UpdateUserSettings)
 			users.DELETE("/:user_id", h.Admin.Affiliate.ClearUserSettings)
 		}
+	}
+}
+
+func registerDailyCashbackRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	cashback := admin.Group("/daily-cashback")
+	{
+		rules := cashback.Group("/rules")
+		{
+			rules.GET("", h.Admin.DailyCashback.ListRules)
+			rules.POST("", h.Admin.DailyCashback.CreateRule)
+			rules.PUT("/:id", h.Admin.DailyCashback.UpdateRule)
+			rules.DELETE("/:id", h.Admin.DailyCashback.DeleteRule)
+		}
+		cashback.GET("/records", h.Admin.DailyCashback.ListRecords)
+		cashback.POST("/run", h.Admin.DailyCashback.Run)
 	}
 }

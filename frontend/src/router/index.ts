@@ -588,6 +588,17 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/daily-cashback',
+    name: 'AdminDailyCashback',
+    component: () => import('@/views/admin/DailyCashbackView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Daily Cashback',
+      titleKey: 'nav.dailyCashback'
+    }
+  },
+  {
     path: '/admin/affiliates',
     redirect: '/admin/affiliates/invites'
   },
