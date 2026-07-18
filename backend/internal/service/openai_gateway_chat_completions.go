@@ -72,6 +72,16 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	if account.Platform == PlatformGrok {
+		if account.IsGrokOAuth() {
+			if eligible, reason := grokChatResponsesBridgeEligibility(body); eligible {
+				return s.forwardGrokChatCompletionsViaResponses(ctx, c, account, body, promptCacheKey, defaultMappedModel)
+			} else {
+				logger.L().Debug("grok chat_completions: using raw fallback",
+					zap.Int64("account_id", account.ID),
+					zap.String("reason", reason),
+				)
+			}
+		}
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 
@@ -267,6 +277,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	// 8. Handle error response with failover
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			expectedTaskID := account.GetCredential("task_id")
+			if err := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); err != nil {
+				return nil, fmt.Errorf("agent identity task recovery failed: %w", err)
+			}
+			return s.ForwardAsChatCompletions(markAgentIdentityTaskRecoveryTried(ctx), c, account, body, promptCacheKey, defaultMappedModel)
+		}
 		if account.Type == AccountTypeAPIKey &&
 			openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportUnknown &&
 			!isResponsesEndpointSupportedByStatus(resp.StatusCode) {
@@ -425,14 +442,11 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message)
 		}
 		message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payload, message)
-		// response.failed 到达在 HTTP 200 SSE 流上，无真实 HTTP 错误码，传 0。
-		if status, errType, errMsg, matched := applyErrorPassthroughRule(
-			c, account.Platform, 0, payload,
-			http.StatusBadGateway, "upstream_error", message,
+		// response.failed 到达在 HTTP 200 SSE 流上，无真实 HTTP 错误码；统一走语义
+		// 状态推断 + body 归一化（与 /v1/responses 路径一致），使按错误码配置的规则可命中。
+		if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(
+			c, account.Platform, payload, message,
 		); matched {
-			if status == 0 {
-				status = http.StatusBadGateway
-			}
 			if errMsg == "" {
 				errMsg = message
 			}
@@ -597,13 +611,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 			message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payloadBytes, message)
 			defaultStatus, defaultErrType, defaultMsg := http.StatusBadGateway, "upstream_error", message
-			if status, errType, errMsg, matched := applyErrorPassthroughRule(
-				c, account.Platform, 0, payloadBytes,
-				defaultStatus, defaultErrType, defaultMsg,
+			// 统一走语义状态推断 + body 归一化（与 /v1/responses 路径一致），
+			// 使按错误码配置的透传规则可命中。
+			if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(
+				c, account.Platform, payloadBytes, message,
 			); matched {
-				if status == 0 {
-					status = defaultStatus
-				}
 				if errMsg == "" {
 					errMsg = defaultMsg
 				}

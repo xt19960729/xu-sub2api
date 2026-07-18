@@ -148,8 +148,31 @@ func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInpu
 	if err := s.userRepo.Create(ctx, user); err != nil {
 		return nil, err
 	}
+	// 创建管理员属权限敏感操作，落审计日志（含操作者），便于事后追溯。
+	if user.Role == RoleAdmin {
+		logger.LegacyPrintf("service.admin", "audit: admin user created actor_admin_id=%d target_user_id=%d",
+			input.ActorAdminID, user.ID)
+	}
 	s.assignDefaultSubscriptions(ctx, user.ID)
 	return user, nil
+}
+
+// ensureNotLastAdmin 降级管理员前确认系统中仍存在其他管理员，防止零 admin 锁死。
+// 注：读取与写入之间存在竞态窗口，极端并发下仍可能双双降级；作为后台低频操作
+// 的兜底保护足够，彻底防护需依赖数据库层约束。
+func (s *adminServiceImpl) ensureNotLastAdmin(ctx context.Context) error {
+	noSubs := false
+	_, result, err := s.userRepo.ListWithFilters(ctx,
+		pagination.PaginationParams{Page: 1, PageSize: 1},
+		UserListFilters{Role: RoleAdmin, IncludeSubscriptions: &noSubs},
+	)
+	if err != nil {
+		return fmt.Errorf("count admin users: %w", err)
+	}
+	if result == nil || result.Total <= 1 {
+		return errors.New("cannot demote the last admin user")
+	}
+	return nil
 }
 
 func (s *adminServiceImpl) assignDefaultSubscriptions(ctx context.Context, userID int64) {
@@ -221,6 +244,13 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 		if err != nil {
 			return nil, err
 		}
+		// 防锁死保护：不允许降级系统中最后一个管理员（自我降级已在 handler 层拦截，
+		// 此处兜底覆盖跨管理员互降导致零 admin 的场景）。
+		if user.Role == RoleAdmin && role == RoleUser {
+			if err := s.ensureNotLastAdmin(ctx); err != nil {
+				return nil, err
+			}
+		}
 		user.Role = role
 	}
 
@@ -238,6 +268,12 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return nil, err
+	}
+
+	// 角色变更属权限敏感操作，落审计日志（含操作者），便于事后追溯。
+	if user.Role != oldRole {
+		logger.LegacyPrintf("service.admin", "audit: user role changed actor_admin_id=%d target_user_id=%d old_role=%s new_role=%s",
+			input.ActorAdminID, user.ID, oldRole, user.Role)
 	}
 
 	// 同步用户专属分组倍率
@@ -423,6 +459,39 @@ func (s *adminServiceImpl) BatchUpdateConcurrency(ctx context.Context, userIDs [
 	return affected, nil
 }
 
+func (s *adminServiceImpl) BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error) {
+	if concurrency == nil && rpmLimit == nil {
+		return 0, fmt.Errorf("at least one of concurrency or rpm_limit is required")
+	}
+
+	cleaned := make([]int64, 0, len(userIDs))
+	seen := make(map[int64]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID <= 0 {
+			continue
+		}
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+		cleaned = append(cleaned, userID)
+	}
+	if len(cleaned) == 0 {
+		return 0, nil
+	}
+
+	affected, err := s.userRepo.BatchUpdateLimits(ctx, cleaned, concurrency, rpmLimit)
+	if err != nil {
+		return 0, err
+	}
+	if s.authCacheInvalidator != nil {
+		for _, userID := range cleaned {
+			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
+		}
+	}
+	return affected, nil
+}
+
 func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error) {
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -451,6 +520,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	if s.authCacheInvalidator != nil && balanceDiff != 0 {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
+	s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, balance)
 
 	if s.billingCacheService != nil {
 		go func() {
@@ -486,6 +556,24 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	}
 
 	return user, nil
+}
+
+func (s *adminServiceImpl) tryAccrueAffiliateRebateForAdminRecharge(ctx context.Context, userID int64, operation string, amount float64) {
+	if operation != "add" || amount <= 0 || s.settingService == nil || s.affiliateService == nil {
+		return
+	}
+	if !s.settingService.IsAffiliateAdminRechargeEnabled(ctx) {
+		return
+	}
+
+	rebate, err := s.affiliateService.AccrueInviteRebate(ctx, userID, amount)
+	if err != nil {
+		logger.LegacyPrintf("service.admin", "affiliate rebate failed for admin recharge: user_id=%d amount=%.8f err=%v", userID, amount, err)
+		return
+	}
+	if rebate > 0 {
+		logger.LegacyPrintf("service.admin", "affiliate rebate accrued for admin recharge: user_id=%d amount=%.8f rebate=%.8f", userID, amount, rebate)
+	}
 }
 
 func (s *adminServiceImpl) GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int, sortBy, sortOrder string) ([]APIKey, int64, error) {
