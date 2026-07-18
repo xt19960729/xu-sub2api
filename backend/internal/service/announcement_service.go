@@ -231,7 +231,7 @@ func (s *AnnouncementService) ListForUser(ctx context.Context, userID int64, unr
 	}
 
 	now := time.Now()
-	anns, err := s.announcementRepo.ListActiveForUser(ctx, now, userID)
+	anns, err := s.announcementRepo.ListActive(ctx, now)
 	if err != nil {
 		return nil, fmt.Errorf("list active announcements: %w", err)
 	}
