@@ -41,6 +41,10 @@ jobs:
           else
             VERSION=${GITHUB_REF#refs/tags/v}
           fi
+          # Fork release tags (for example v0.1.160-xt.2) must remain unique,
+          # but the application should compare itself with the matching
+          # upstream stable version to avoid a false "new version" prompt.
+          VERSION=${VERSION%%-xt.*}
           echo "$VERSION" > backend/cmd/server/VERSION
           echo "Updated VERSION file to: $VERSION"
 
@@ -290,6 +294,7 @@ jobs:
           else
             VERSION=${GITHUB_REF#refs/tags/v}
           fi
+          VERSION=${VERSION%%-xt.*}
 
           CURRENT_VERSION=$(tr -d '\r\n' < backend/cmd/server/VERSION || true)
           if [ "$CURRENT_VERSION" = "$VERSION" ]; then
